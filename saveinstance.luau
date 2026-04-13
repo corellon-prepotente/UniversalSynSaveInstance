@@ -61,6 +61,30 @@ local appendfile = appendfile
 local isfile = isfile
 local readfile = readfile
 local writefile = writefile
+local makefolder = makefolder
+local isfolder = isfolder
+
+-- Get executor workspace folder
+local function GetWorkspaceFolder()
+	-- Try common workspace folder names
+	local workspaceFolders = { "workspace", "Workspace", "scripts", "Scripts" }
+	for _, folder in workspaceFolders do
+		if isfolder and isfolder(folder) then
+			return folder .. "/"
+		end
+	end
+	-- Return empty string if no workspace folder found (some executors use root)
+	return ""
+end
+
+local WORKSPACE_FOLDER = GetWorkspaceFolder()
+
+-- Ensure folder exists
+local function EnsureFolder(path)
+	if makefolder and not isfolder(path) then
+		pcall(makefolder, path)
+	end
+end
 
 local getscriptbytecode = global_container.getscriptbytecode
 local base64encode = global_container.base64encode
@@ -1169,6 +1193,11 @@ end
 local function SaveInstance(instance, options)
 	options = options or {}
 	local FileName = options.FileName or instance.Name .. ".rbxmx"
+	
+	-- Ensure filename has proper extension
+	if not string.find(FileName, "%.rbxmx$") and not string.find(FileName, "%.rbxlx$") and not string.find(FileName, "%.rbxl$") then
+		FileName = FileName .. ".rbxmx"
+	end
 	local SaveScripts = options.SaveScripts ~= false
 	local DecompileScripts = options.DecompileScripts ~= false
 	local DecompileTimeout = options.DecompileTimeout or 10
@@ -1281,8 +1310,30 @@ local function SaveInstance(instance, options)
 	ProcessInstance(instance, true)
 	table.insert(xml, "</roblox>")
 
-	writefile(FileName, table.concat(xml, "\n"))
-	return FileName
+	-- Ensure proper file path
+	local fullPath = WORKSPACE_FOLDER .. FileName
+	
+	-- Ensure the folder exists (for subfolders in filename)
+	local folderPath = string.match(fullPath, "^(.*)/[^/]+$")
+	if folderPath and folderPath ~= "" then
+		EnsureFolder(folderPath)
+	end
+	
+	local content = table.concat(xml, "\n")
+	local success, err = pcall(writefile, fullPath, content)
+	
+	if not success then
+		-- Try without workspace folder as fallback
+		success, err = pcall(writefile, FileName, content)
+		if success then
+			fullPath = FileName
+		else
+			error("Failed to write file: " .. tostring(err))
+		end
+	end
+	
+	print("[UniversalSynSaveInstance] Saved to: " .. fullPath)
+	return fullPath
 end
 
 local function synsaveinstance(options)
@@ -1298,21 +1349,40 @@ local function synsaveinstance(options)
 	if typeof(Objects) ~= "table" then
 		Objects = { Objects }
 	end
+	
+	print("[UniversalSynSaveInstance] Starting save...")
+	print("[UniversalSynSaveInstance] Workspace folder: " .. (WORKSPACE_FOLDER ~= "" and WORKSPACE_FOLDER or "(root)"))
 
 	for _, obj in Objects do
 		local name = obj.Name or "object"
+		-- Clean up name for filename (remove special chars)
+		name = string.gsub(name, "[^%w%s_-]", "")
+		name = string.gsub(name, "%s+", "_")
+		
 		local filename = FileName .. "_" .. name .. "." .. SaveFormat
-		SaveInstance(obj, {
-			FileName = filename,
-			SaveScripts = options.SaveScripts,
-			DecompileScripts = options.DecompileScripts,
-			DecompileTimeout = options.DecompileTimeout,
-			SaveNonCreatable = options.SaveNonCreatable,
-			IgnoreArchivable = options.IgnoreArchivable,
-			IgnoreSpecial = options.IgnoreSpecial,
-			SafeMode = options.SafeMode,
-		})
+		print("[UniversalSynSaveInstance] Saving: " .. obj.ClassName .. " (" .. (obj.Name or "unnamed") .. ")")
+		
+		local success, result = pcall(function()
+			return SaveInstance(obj, {
+				FileName = filename,
+				SaveScripts = options.SaveScripts,
+				DecompileScripts = options.DecompileScripts,
+				DecompileTimeout = options.DecompileTimeout,
+				SaveNonCreatable = options.SaveNonCreatable,
+				IgnoreArchivable = options.IgnoreArchivable,
+				IgnoreSpecial = options.IgnoreSpecial,
+				SafeMode = options.SafeMode,
+			})
+		end)
+		
+		if not success then
+			warn("[UniversalSynSaveInstance] Error saving " .. name .. ": " .. tostring(result))
+		else
+			print("[UniversalSynSaveInstance] Successfully saved: " .. result)
+		end
 	end
+	
+	print("[UniversalSynSaveInstance] Save complete!")
 end
 
 getgenv().synsaveinstance = synsaveinstance
